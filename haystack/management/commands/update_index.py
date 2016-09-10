@@ -2,6 +2,8 @@ from datetime import timedelta
 from optparse import make_option
 import logging
 import os
+import multiprocessing
+import time
 
 from django import db
 from django.conf import settings
@@ -22,9 +24,11 @@ except ImportError:
 
 DEFAULT_BATCH_SIZE = None
 DEFAULT_AGE = None
+DEFAULT_MAX_RETRIES = 5
 APP = 'app'
 MODEL = 'model'
 
+logger = multiprocessing.get_logger()
 
 def worker(bits):
     # We need to reset the connections, otherwise the different processes
@@ -45,7 +49,7 @@ def worker(bits):
                 pass
 
     if bits[0] == 'do_update':
-        func, model, start, end, total, using, start_date, end_date, verbosity = bits
+        func, model, start, end, total, using, start_date, end_date, verbosity, max_retries = bits
     elif bits[0] == 'do_remove':
         func, model, pks_seen, start, upper_bound, using, verbosity = bits
     else:
@@ -55,27 +59,65 @@ def worker(bits):
     index = unified_index.get_index(model)
     backend = haystack_connections[using].get_backend()
 
+
     if func == 'do_update':
         qs = index.build_queryset(start_date=start_date, end_date=end_date)
-        do_update(backend, index, qs, start, end, total, verbosity=verbosity)
+        do_update(backend, index, qs, start, end, total, verbosity=verbosity, max_retries=max_retries)
     elif bits[0] == 'do_remove':
         do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=verbosity)
 
 
-def do_update(backend, index, qs, start, end, total, verbosity=1):
+def do_update(backend, index, qs, start, end, total, verbosity=1,
+              max_retries=DEFAULT_MAX_RETRIES):
     # Get a clone of the QuerySet so that the cache doesn't bloat up
     # in memory. Useful when reindexing large amounts of data.
     small_cache_qs = qs.all()
     current_qs = small_cache_qs[start:end]
 
+    is_parent_process = hasattr(os, 'getppid') and os.getpid() == os.getppid()
     if verbosity >= 2:
         if hasattr(os, 'getppid') and os.getpid() == os.getppid():
-            print "  indexed %s - %d of %d." % (start + 1, end, total)
+            logger.debug("  indexed %s - %d of %d." % (start + 1, end, total))
         else:
-            print "  indexed %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid())
+            logger.debug("  indexed %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid()))
 
-    # FIXME: Get the right backend.
-    backend.update(index, current_qs)
+    retries = 0
+    while retries < max_retries:
+        try:
+            # FIXME: Get the right backend.
+            backend.update(index, current_qs)
+            if verbosity >= 2 and retries:
+                logger.debug('Completed indexing {} - {}, tried {}/{} times'.format(start + 1,
+                                                                             end,
+                                                                             retries + 1,
+                                                                             max_retries))
+            break
+        except Exception as exc:
+            # Catch all exceptions which do not normally trigger a system exit, excluding SystemExit and
+            # KeyboardInterrupt. This avoids needing to import the backend-specific exception subclasses
+            # from pysolr, elasticsearch, whoosh, requests, etc.
+            retries += 1
+
+            error_context = {'start': start + 1,
+                             'end': end,
+                             'retries': retries,
+                             'max_retries': max_retries,
+                             'pid': os.getpid(),
+                             'exc': exc}
+
+            error_msg = 'Failed indexing %(start)s - %(end)s (retry %(retries)s/%(max_retries)s): %(exc)s'
+            if not is_parent_process:
+                error_msg += ' (pid %(pid)s): %(exc)s'
+
+            if retries >= max_retries:
+                logger.error(error_msg, error_context, exc_info=True)
+                raise
+            elif verbosity >= 2:
+                logger.warning(error_msg, error_context, exc_info=True)
+
+            # If going to try again, sleep a bit before
+            time.sleep(2 ** retries)
+
 
     # Clear out the DB connections queries because it bloats up RAM.
     reset_queries()
@@ -93,7 +135,7 @@ def do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=1):
         if not smart_str(result.pk) in pks_seen:
             # The id is NOT in the small_cache_qs, issue a delete.
             if verbosity >= 2:
-                print "  removing %s." % result.pk
+                logger.info("  removing %s." % result.pk)
 
             backend.remove(".".join([result.app_label, result.model_name, str(result.pk)]))
 
@@ -129,6 +171,9 @@ class Command(LabelCommand):
             default=0, type='int',
             help='Allows for the use multiple workers to parallelize indexing. Requires multiprocessing.'
         ),
+        make_option('-t', '--max-retries', action='store', dest='max_retries',
+                    default=DEFAULT_MAX_RETRIES, type='int',
+                    help='Maximum number of attempts to write to the backend when an error occurs.'),
     )
     option_list = LabelCommand.option_list + base_options
 
@@ -139,6 +184,7 @@ class Command(LabelCommand):
         self.end_date = None
         self.remove = options.get('remove', False)
         self.workers = int(options.get('workers', 0))
+        self.max_retries = options.get('max_retries', DEFAULT_MAX_RETRIES)
 
         self.backends = options.get('using')
         if not self.backends:
@@ -218,15 +264,12 @@ class Command(LabelCommand):
         backend = haystack_connections[using].get_backend()
         unified_index = haystack_connections[using].get_unified_index()
 
-        if self.workers > 0:
-            import multiprocessing
-
         for model in self.get_models(label):
             try:
                 index = unified_index.get_index(model)
             except NotHandled:
                 if self.verbosity >= 2:
-                    print "Skipping '%s' - no index." % model
+                    logger.debug("Skipping '%s' - no index." % model)
                 continue
 
             if self.workers > 0:
@@ -241,7 +284,7 @@ class Command(LabelCommand):
             total = qs.count()
 
             if self.verbosity >= 1:
-                print u"Indexing %d %s" % (total, force_unicode(model._meta.verbose_name_plural))
+                logger.info(u"Indexing %d %s" % (total, force_unicode(model._meta.verbose_name_plural)))
 
             pks_seen = set([smart_str(pk) for pk in qs.values_list('pk', flat=True)])
             batch_size = self.batchsize or backend.batch_size
@@ -252,10 +295,12 @@ class Command(LabelCommand):
             for start in range(0, total, batch_size):
                 end = min(start + batch_size, total)
 
-                if self.workers == 0:
-                    do_update(backend, index, qs, start, end, total, self.verbosity)
+		if self.workers == 0:
+                    do_update(backend, index, qs, start, end, total, verbosity=self.verbosity, max_retries=self.max_retries)
                 else:
-                    ghetto_queue.append(('do_update', model, start, end, total, using, self.start_date, self.end_date, self.verbosity))
+                    ghetto_queue.append(('do_update', model, start, end, total, using, self.start_date, self.end_date,
+                                         self.verbosity, self.max_retries))
+
 
             if self.workers > 0:
                 pool = multiprocessing.Pool(self.workers)

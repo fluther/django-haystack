@@ -1,3 +1,8 @@
+NOTE
+====
+
+This is a forked version 2.0.0 that adds retries for update_index but still supports Django 1.4 -- Andrew McClain
+
 ========
 Haystack
 ========
@@ -19,7 +24,6 @@ modify the source and supports advanced features like faceting, More Like This,
 highlighting, spatial search and spelling suggestions.
 
 You can find more information at http://haystacksearch.org/.
-
 
 Getting Help
 ============
