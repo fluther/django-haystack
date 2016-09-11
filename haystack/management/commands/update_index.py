@@ -29,6 +29,8 @@ APP = 'app'
 MODEL = 'model'
 
 logger = multiprocessing.get_logger()
+logger.name = __name__
+logger.propagate = True
 
 def worker(bits):
     # We need to reset the connections, otherwise the different processes
@@ -77,9 +79,9 @@ def do_update(backend, index, qs, start, end, total, verbosity=1,
     is_parent_process = hasattr(os, 'getppid') and os.getpid() == os.getppid()
     if verbosity >= 2:
         if hasattr(os, 'getppid') and os.getpid() == os.getppid():
-            logger.debug("  indexed %s - %d of %d." % (start + 1, end, total))
+            logger.info("  indexing %s - %d of %d." % (start + 1, end, total))
         else:
-            logger.debug("  indexed %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid()))
+            logger.info("  indexing %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid()))
 
     retries = 0
     while retries < max_retries:
@@ -87,7 +89,7 @@ def do_update(backend, index, qs, start, end, total, verbosity=1,
             # FIXME: Get the right backend.
             backend.update(index, current_qs)
             if verbosity >= 2 and retries:
-                logger.debug('Completed indexing {} - {}, tried {}/{} times'.format(start + 1,
+                logger.info('Completed indexing {} - {}, tried {}/{} times'.format(start + 1,
                                                                              end,
                                                                              retries + 1,
                                                                              max_retries))
