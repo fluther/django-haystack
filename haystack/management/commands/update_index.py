@@ -28,9 +28,7 @@ DEFAULT_MAX_RETRIES = 5
 APP = 'app'
 MODEL = 'model'
 
-logger = multiprocessing.get_logger()
-logger.name = __name__
-logger.propagate = True
+logger = logging.getLogger(__name__)
 
 def worker(bits):
     # We need to reset the connections, otherwise the different processes
@@ -68,6 +66,8 @@ def worker(bits):
     elif bits[0] == 'do_remove':
         do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=verbosity)
 
+def is_parent_process():
+    return hasattr(os, 'getppid') and os.getpid() == os.getppid()
 
 def do_update(backend, index, qs, start, end, total, verbosity=1,
               max_retries=DEFAULT_MAX_RETRIES):
@@ -76,9 +76,8 @@ def do_update(backend, index, qs, start, end, total, verbosity=1,
     small_cache_qs = qs.all()
     current_qs = small_cache_qs[start:end]
 
-    is_parent_process = hasattr(os, 'getppid') and os.getpid() == os.getppid()
     if verbosity >= 2:
-        if hasattr(os, 'getppid') and os.getpid() == os.getppid():
+        if is_parent_process():
             logger.info("  indexing %s - %d of %d." % (start + 1, end, total))
         else:
             logger.info("  indexing %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid()))
@@ -108,7 +107,7 @@ def do_update(backend, index, qs, start, end, total, verbosity=1,
                              'exc': exc}
 
             error_msg = 'Failed indexing %(start)s - %(end)s (retry %(retries)s/%(max_retries)s): %(exc)s'
-            if not is_parent_process:
+            if not is_parent_process():
                 error_msg += ' (pid %(pid)s): %(exc)s'
 
             if retries >= max_retries:
@@ -129,6 +128,8 @@ def do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=1):
     # Fetch a list of results.
     # Can't do pk range, because id's are strings (thanks comments
     # & UUIDs!).
+    if verbosity >= 2:
+        logger.info("  Remove: scanning %s - %d." % (start + 1, upper_bound))
     stuff_in_the_index = SearchQuerySet().models(model)[start:upper_bound]
 
     # Iterate over those results.
@@ -137,7 +138,7 @@ def do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=1):
         if not smart_str(result.pk) in pks_seen:
             # The id is NOT in the small_cache_qs, issue a delete.
             if verbosity >= 2:
-                logger.info("  removing %s." % result.pk)
+                logger.info("  removing pk:%s." % result.pk)
 
             backend.remove(".".join([result.app_label, result.model_name, str(result.pk)]))
 
@@ -324,7 +325,7 @@ class Command(LabelCommand):
                     upper_bound = start + batch_size
 
                     if self.workers == 0:
-                        do_remove(backend, index, model, pks_seen, start, upper_bound)
+                        do_remove(backend, index, model, pks_seen, start, upper_bound, using, verbosity=self.verbosity)
                     else:
                         ghetto_queue.append(('do_remove', model, pks_seen, start, upper_bound, using, self.verbosity))
 
