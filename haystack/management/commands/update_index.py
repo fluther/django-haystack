@@ -325,7 +325,7 @@ class Command(LabelCommand):
                     upper_bound = start + batch_size
 
                     if self.workers == 0:
-                        do_remove(backend, index, model, pks_seen, start, upper_bound, using, verbosity=self.verbosity)
+                        do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=self.verbosity)
                     else:
                         ghetto_queue.append(('do_remove', model, pks_seen, start, upper_bound, using, self.verbosity))
 

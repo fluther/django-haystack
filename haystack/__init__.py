@@ -1,4 +1,5 @@
 import logging
+from logging import NullHandler
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from haystack.constants import DEFAULT_ALIAS
@@ -7,14 +8,13 @@ from haystack.utils import loading
 
 
 __author__ = 'Daniel Lindsley'
-__version__ = (2, 0, 0)
+__version__ = (2, 0, 1)
 
 
 # Setup default logging.
-log = logging.getLogger('haystack')
-stream = logging.StreamHandler()
-stream.setLevel(logging.INFO)
-log.addHandler(stream)
+logger = logging.getLogger('haystack')
+if not logger.handlers: # Libraries should use null handlers, I think! AWM
+    logger.addHandler(NullHandler())
 
 
 # Help people clean up from 1.X.
