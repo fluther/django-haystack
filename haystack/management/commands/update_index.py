@@ -78,9 +78,9 @@ def do_update(backend, index, qs, start, end, total, verbosity=1,
 
     if verbosity >= 2:
         if is_parent_process():
-            logger.info("  indexing %s - %d of %d." % (start + 1, end, total))
+            logger.debug("  indexing %s - %d of %d." % (start + 1, end, total))
         else:
-            logger.info("  indexing %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid()))
+            logger.debug("  indexing %s - %d of %d (by %s)." % (start + 1, end, total, os.getpid()))
 
     retries = 0
     while retries < max_retries:
@@ -129,7 +129,7 @@ def do_remove(backend, index, model, pks_seen, start, upper_bound, verbosity=1):
     # Can't do pk range, because id's are strings (thanks comments
     # & UUIDs!).
     if verbosity >= 2:
-        logger.info("  Remove: scanning %s - %d." % (start + 1, upper_bound))
+        logger.debug("  Remove: scanning %s - %d." % (start + 1, upper_bound))
     stuff_in_the_index = SearchQuerySet().models(model)[start:upper_bound]
 
     # Iterate over those results.
